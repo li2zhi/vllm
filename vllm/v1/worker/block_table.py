@@ -51,6 +51,17 @@ class BlockTable:
                                         dtype=torch.int64,
                                         device=self.device)
 
+        max_total_kv_tokens = self.max_num_reqs * self.max_num_blocks_per_req * self.block_size
+
+        self.occupied_slot_mapping_cpu = torch.zeros(max_total_kv_tokens,
+                                                     dtype=torch.int64,
+                                                     device="cpu",
+                                                     pin_memory=self.pin_memory)
+        self.occupied_slot_mapping_np = self.occupied_slot_mapping_cpu.numpy()
+        self.occupied_slot_mapping = torch.zeros(max_total_kv_tokens,
+                                                 dtype=torch.int64,
+                                                 device=self.device)
+
     def append_row(
         self,
         block_ids: list[int],
@@ -82,7 +93,7 @@ class BlockTable:
         self.block_table_np[[src, tgt]] = self.block_table_np[[tgt, src]]
 
     def compute_slot_mapping(self, req_indices: np.ndarray,
-                             positions: np.ndarray) -> None:
+                             positions: np.ndarray, is_occupied: bool) -> None:
         # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
         # -> [0, 0, K, K, K + 1, K + 1, K + 2, 2 * K, 2 * K, 2 * K + 1]
         # where K is the max_num_blocks_per_req and the block size is 2.
@@ -93,17 +104,22 @@ class BlockTable:
                                positions // self.block_size)
         block_numbers = self.block_table_np.ravel()[block_table_indices]
         block_offsets = positions % self.block_size
+
+        out = self.occupied_slot_mapping_np if is_occupied else self.slot_mapping_np
+
         np.add(block_numbers * self.block_size,
                block_offsets,
-               out=self.slot_mapping_np[:req_indices.shape[0]])
+               out=out[:req_indices.shape[0]])
 
     def commit_block_table(self, num_reqs: int) -> None:
         self.block_table[:num_reqs].copy_(self.block_table_cpu[:num_reqs],
                                           non_blocking=True)
 
-    def commit_slot_mapping(self, num_tokens: int) -> None:
-        self.slot_mapping[:num_tokens].copy_(
-            self.slot_mapping_cpu[:num_tokens], non_blocking=True)
+    def commit_slot_mapping(self, total_num_scheduled_tokens: int, total_num_kv_cache_tokens: int) -> None:
+        self.slot_mapping[:total_num_scheduled_tokens].copy_(
+            self.slot_mapping_cpu[:total_num_scheduled_tokens], non_blocking=True)
+        self.occupied_slot_mapping[:total_num_kv_cache_tokens].copy_(
+            self.occupied_slot_mapping_cpu[:total_num_kv_cache_tokens], non_blocking=True)
 
     def clear(self) -> None:
         self.block_table.fill_(0)
@@ -153,17 +169,17 @@ class MultiGroupBlockTable:
             block_table.swap_row(src, tgt)
 
     def compute_slot_mapping(self, req_indices: np.ndarray,
-                             positions: np.ndarray) -> None:
+                             positions: np.ndarray, is_occupied: bool) -> None:
         for block_table in self.block_tables:
-            block_table.compute_slot_mapping(req_indices, positions)
+            block_table.compute_slot_mapping(req_indices, positions, is_occupied)
 
     def commit_block_table(self, num_reqs: int) -> None:
         for block_table in self.block_tables:
             block_table.commit_block_table(num_reqs)
 
-    def commit_slot_mapping(self, num_tokens: int) -> None:
+    def commit_slot_mapping(self, total_num_scheduled_tokens: int, total_num_kv_cache_tokens: int) -> None:
         for block_table in self.block_tables:
-            block_table.commit_slot_mapping(num_tokens)
+            block_table.commit_slot_mapping(total_num_scheduled_tokens, total_num_kv_cache_tokens)
 
     def clear(self) -> None:
         for block_table in self.block_tables:

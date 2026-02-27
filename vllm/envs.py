@@ -162,6 +162,8 @@ if TYPE_CHECKING:
     VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: bool = False
     VLLM_USE_FLASHINFER_MOE_MXFP4_BF16: bool = False
     VLLM_TUNED_CONFIG_FOLDER: Optional[str] = None
+    VLLM_V1_R_KV_BUDGET: int = 512
+    VLLM_V1_R_KV_BUFFER: int = 128
 
 
 def get_default_cache_root():
@@ -1157,6 +1159,18 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_TUNED_CONFIG_FOLDER":
     lambda: os.getenv("VLLM_TUNED_CONFIG_FOLDER", None),
 
+    # Sets the total KV size budget (in number of tokens) used during compression.
+    # Lowering this value can reduce memory usage but may increase recomputation overhead.
+    # Applies only to vLLM v1; not supported in vLLM v0.
+    "VLLM_V1_R_KV_BUDGET":
+        lambda: int(os.getenv("VLLM_V1_R_KV_BUDGET", "512")),
+
+    # Controls how many new tokens are generated before triggering KV compression.
+    # A larger value reduces compression frequency, which may improve throughput
+    # at the cost of memory. A smaller value compresses more frequently to save memory.
+    # Applies only to vLLM v1; not supported in vLLM v0.
+    "VLLM_V1_R_KV_BUFFER":
+        lambda: int(os.getenv("VLLM_V1_R_KV_BUFFER", "128")),
 }
 
 # --8<-- [end:env-vars-definition]
