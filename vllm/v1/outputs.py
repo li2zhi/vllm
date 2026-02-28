@@ -127,4 +127,5 @@ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(req_ids=[],
                                               logprobs=None,
                                               prompt_logprobs_dict={},
                                               pooler_output=[],
+                                              num_dropped_tokens_list=[],
                                               num_nans_in_logits=None)

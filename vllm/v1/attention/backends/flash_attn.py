@@ -129,6 +129,11 @@ class FlashAttentionMetadata:
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
 
+    # For R1KV
+    num_reqs: int
+    num_dropped_tokens_list: list[int]
+    occupied_slot_mapping: torch.Tensor
+
     # For cascade attention.
     use_cascade: bool
     common_prefix_len: int
@@ -243,6 +248,10 @@ class FlashAttentionMetadataBuilder(
         block_table_tensor = common_attn_metadata.block_table_tensor
         slot_mapping = common_attn_metadata.slot_mapping
         causal = common_attn_metadata.causal
+
+        total_num_kv_cache_tokens = common_attn_metadata.total_num_kv_cache_tokens
+        occupied_slot_mapping = common_attn_metadata.occupied_slot_mapping
+        num_dropped_tokens_list = [0] * num_reqs
 
         # the overhead of the aot schedule is not worth it for spec-decode
         aot_schedule = self.aot_schedule and not fast_build
@@ -361,7 +370,11 @@ class FlashAttentionMetadataBuilder(
             suffix_kv_lens=suffix_kv_lens,
             prefix_scheduler_metadata=prefix_scheduler_metadata,
             max_num_splits=max_num_splits,
-            causal=causal)
+            causal=causal,
+            num_reqs=num_reqs,
+            num_dropped_tokens_list=num_dropped_tokens_list,
+            occupied_slot_mapping=occupied_slot_mapping,
+        )
         return attn_metadata
 
     def use_cascade_attention(self, *args, **kwargs) -> bool:
@@ -590,7 +603,7 @@ class FlashAttentionImpl(AttentionImpl):
                 current_value_cache = current_value_cache.unsqueeze(0)
 
                 current_kv_len = current_key_cache.size(2)
-                compressed_key_cache, compressed_value_cache = self.kvcompressor.update_kv(
+                compressed_key_cache, compressed_value_cache = self.kv_compressor.update_kv(
                     current_key_cache,
                     current_query,
                     current_value_cache,
