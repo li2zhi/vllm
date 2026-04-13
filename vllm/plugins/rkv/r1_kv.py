@@ -57,7 +57,6 @@ class R1KV:
 
         similarity_cos = cal_similarity(
             key_states,
-            retain_ratio=self.retain_ratio,
             retain_direction=self.retain_direction,
         )[:, : -self.window_size]
 
