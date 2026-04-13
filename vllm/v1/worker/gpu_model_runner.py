@@ -350,6 +350,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         self.reorder_batch_threshold: Optional[int] = None
 
+        self.total_compress_reqs = 0
+        self.total_computed_tokens = 0
+        self.total_dropped_tokens = 0
+
     def _init_model_kwargs(self, num_tokens: int):
         model_kwargs = dict[str, Any]()
         num_reqs = self.input_batch.num_reqs
@@ -432,8 +436,19 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         """
         # Remove finished requests from the cached states.
         for req_id in scheduler_output.finished_req_ids:
-            self.requests.pop(req_id, None)
             self.encoder_cache.pop(req_id, None)
+            finished_req = self.requests.pop(req_id, None)
+
+            self.total_computed_tokens += finished_req.num_computed_tokens
+            if finished_req.num_dropped_tokens > 0:
+                self.total_compress_reqs += 1
+                self.total_dropped_tokens += finished_req.num_dropped_tokens
+
+            print(f"\n======================DEBUG======================")
+            print(f"total_computed_tokens: {self.total_computed_tokens}")
+            print(f"total_compress_reqs: {self.total_compress_reqs}, total_dropped_tokens: {self.total_dropped_tokens}")
+            print(f"\n======================DEBUG======================")
+
         # Remove the finished requests from the persistent batch.
         # NOTE(woosuk): There could be an edge case where finished_req_ids and
         # scheduled_req_ids overlap. This happens when a request is aborted and
