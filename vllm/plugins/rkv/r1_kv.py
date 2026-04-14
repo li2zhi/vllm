@@ -35,14 +35,13 @@ class R1KV:
         if kv_cache_len < self.budget:
             return key_states, value_states
 
-        attn_weights = compute_attention_scores(query_states, key_states)
+        recent_query = query_states[:, :, -self.window_size:, :]
+        history_key = key_states[:, :, :-self.window_size, :]
+
+        attn_weights = compute_attention_scores(recent_query, history_key)
 
         attn_weights_sum = (
-            nn.functional.softmax(
-                attn_weights[:, :, -self.window_size:, : -self.window_size],
-                dim=-1,
-                dtype=torch.float32,
-            )
+            nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32,)
             .mean(dim=-2)
             .to(query_states.dtype)
         )
