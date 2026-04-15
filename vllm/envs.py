@@ -186,6 +186,8 @@ if TYPE_CHECKING:
     VLLM_HAS_FLASHINFER_CUBIN: bool = False
     VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8: bool = False
     VLLM_USE_FLASHINFER_MOE_MXFP4_BF16: bool = False
+    VLLM_V1_R_KV_BUDGET: int = 512
+    VLLM_V1_R_KV_BUFFER: int = 128
     VLLM_ROCM_FP8_MFMA_PAGE_ATTN: bool = False
     VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8_CUTLASS: bool = False
     VLLM_ALLREDUCE_USE_SYMM_MEM: bool = True
@@ -1197,6 +1199,19 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # BF16 (activation) x MXFP4 (weight) MoE backend.
     "VLLM_USE_FLASHINFER_MOE_MXFP4_BF16":
     lambda: bool(int(os.getenv("VLLM_USE_FLASHINFER_MOE_MXFP4_BF16", "0"))),
+
+    # Sets the total KV size budget (in number of tokens) used during
+    # compression. Lowering this value can reduce memory usage but may
+    # increase recomputation overhead. Applies only to vLLM v1.
+    "VLLM_V1_R_KV_BUDGET":
+    lambda: int(os.getenv("VLLM_V1_R_KV_BUDGET", "512")),
+
+    # Controls how many new tokens are generated before triggering KV
+    # compression. A larger value reduces compression frequency, while a
+    # smaller value compresses more frequently to save memory.
+    # Applies only to vLLM v1.
+    "VLLM_V1_R_KV_BUFFER":
+    lambda: int(os.getenv("VLLM_V1_R_KV_BUFFER", "128")),
 
     # Control the cache sized used by the xgrammar compiler. The default
     # of 512 MB should be enough for roughly 1000 JSON schemas.

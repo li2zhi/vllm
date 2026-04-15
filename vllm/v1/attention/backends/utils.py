@@ -73,6 +73,7 @@ class CommonAttentionMetadata:
 
     block_table_tensor: torch.Tensor
     slot_mapping: torch.Tensor
+    occupied_slot_mapping: torch.Tensor
 
     causal: bool = True
 
@@ -175,6 +176,7 @@ def _make_metadata_with_slice(
 
     block_table_tensor = attn_metadata.block_table_tensor[request_slice]
     slot_mapping = attn_metadata.slot_mapping[token_slice]
+    occupied_slot_mapping = attn_metadata.occupied_slot_mapping[token_slice]
 
     return CommonAttentionMetadata(
         query_start_loc=query_start_loc,
@@ -188,6 +190,7 @@ def _make_metadata_with_slice(
         max_seq_len=max_seq_len,
         block_table_tensor=block_table_tensor,
         slot_mapping=slot_mapping,
+        occupied_slot_mapping=occupied_slot_mapping,
     )
 
 
@@ -638,6 +641,7 @@ def make_local_attention_virtual_batches(
         max_seq_len=max_seq_len,
         block_table_tensor=block_table_local,
         slot_mapping=common_attn_metadata.slot_mapping,
+        occupied_slot_mapping=common_attn_metadata.occupied_slot_mapping,
         causal=True,
     )
 
@@ -700,6 +704,7 @@ def make_kv_sharing_fast_prefill_common_attn_metadata(
         max_seq_len=common_attn_metadata.max_seq_len,
         block_table_tensor=common_attn_metadata.block_table_tensor,
         slot_mapping=common_attn_metadata.slot_mapping,
+        occupied_slot_mapping=common_attn_metadata.occupied_slot_mapping,
         causal=True,
     )
     return common_attn_metadata

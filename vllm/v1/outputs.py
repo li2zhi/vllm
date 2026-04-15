@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, NamedTuple, Optional, Union
 
 import torch
@@ -127,6 +127,8 @@ class ModelRunnerOutput:
 
     # req_id -> num_nans_in_logits
     num_nans_in_logits: Optional[dict[str, int]] = None
+    # [num_reqs]
+    num_dropped_tokens_list: list[int] = field(default_factory=list)
 
 
 # ModelRunnerOutput wrapper for async scheduling.
@@ -158,4 +160,5 @@ EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(req_ids=[],
                                               logprobs=None,
                                               prompt_logprobs_dict={},
                                               pooler_output=[],
+                                              num_dropped_tokens_list=[],
                                               num_nans_in_logits=None)

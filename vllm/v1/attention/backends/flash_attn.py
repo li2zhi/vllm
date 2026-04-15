@@ -124,6 +124,10 @@ class FlashAttentionMetadata:
     seq_lens: torch.Tensor
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
+    # For R1KV.
+    num_reqs: int
+    num_dropped_tokens_list: list[int]
+    occupied_slot_mapping: torch.Tensor
 
     # For cascade attention.
     use_cascade: bool
@@ -237,7 +241,9 @@ class FlashAttentionMetadataBuilder(
         seq_lens_cpu = common_attn_metadata.seq_lens_cpu
         block_table_tensor = common_attn_metadata.block_table_tensor
         slot_mapping = common_attn_metadata.slot_mapping
+        occupied_slot_mapping = common_attn_metadata.occupied_slot_mapping
         causal = common_attn_metadata.causal
+        num_dropped_tokens_list = [0] * num_reqs
 
         # the overhead of the aot schedule is not worth it for spec-decode
         aot_schedule = self.aot_schedule and not fast_build
@@ -349,6 +355,9 @@ class FlashAttentionMetadataBuilder(
             seq_lens=seq_lens,
             block_table=block_table_tensor,
             slot_mapping=slot_mapping,
+            num_reqs=num_reqs,
+            num_dropped_tokens_list=num_dropped_tokens_list,
+            occupied_slot_mapping=occupied_slot_mapping,
             use_cascade=use_cascade,
             common_prefix_len=common_prefix_len,
             scheduler_metadata=scheduler_metadata,

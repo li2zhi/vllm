@@ -1198,6 +1198,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 max_seq_len=max_seq_len,
                 block_table_tensor=blk_table_tensor,
                 slot_mapping=slot_mapping,
+                occupied_slot_mapping=slot_mapping,
                 logits_indices_padded=logits_indices_padded,
                 num_logits_indices=logits_indices.size(0),
                 causal=True,
@@ -2432,6 +2433,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             pooler_output=[],
             kv_connector_output=kv_connector_output,
             num_nans_in_logits=num_nans_in_logits,
+            num_dropped_tokens_list=self.input_batch.
+            num_dropped_tokens_list_cpu[:len(req_ids_output_copy)].tolist(),
         )
 
         if not self.use_async_scheduling:
@@ -3058,6 +3061,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     block_table_tensor=self.input_batch.
                     block_table[kv_cache_group_id].get_device_tensor(num_reqs),
                     slot_mapping=self.input_batch.block_table[
+                        kv_cache_group_id].slot_mapping.gpu[:num_tokens],
+                    occupied_slot_mapping=self.input_batch.block_table[
                         kv_cache_group_id].slot_mapping.gpu[:num_tokens],
                     causal=True)
                 for attn_group in self.attn_groups[kv_cache_group_id]:

@@ -528,6 +528,8 @@ class EagleProposer:
             max_seq_len=common_attn_metadata.seq_lens_cpu.max().item(),
             block_table_tensor=common_attn_metadata.block_table_tensor,
             slot_mapping=common_attn_metadata.slot_mapping[token_indices],
+            occupied_slot_mapping=common_attn_metadata.
+            occupied_slot_mapping[token_indices],
             causal=True,
         )
 
@@ -801,6 +803,8 @@ class EagleProposer:
             max_seq_len=new_seq_lens_cpu.max().item(),
             block_table_tensor=common_attn_metadata.block_table_tensor,
             slot_mapping=common_attn_metadata.slot_mapping[token_indices],
+            occupied_slot_mapping=common_attn_metadata.
+            occupied_slot_mapping[token_indices],
             causal=True,
         )
 
