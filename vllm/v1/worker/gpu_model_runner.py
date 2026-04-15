@@ -344,7 +344,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # Persistent buffers for CUDA graphs.
         self.input_ids = self._make_buffer(self.max_num_tokens,
                                            dtype=torch.int32)
-        self.positions = self._make_buffer(self.max_num_tokens,
+        self.logical_positions = self._make_buffer(self.max_num_tokens,
+                                           dtype=torch.int64)
+        self.physical_positions = self._make_buffer(self.max_num_tokens,
                                            dtype=torch.int64)
         self.query_start_loc = self._make_buffer(self.max_num_reqs + 1,
                                                  dtype=torch.int32)
@@ -395,10 +397,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # OPTIMIZATION: Cache the tensors rather than creating them every step.
         # Keep in int64 to avoid overflow with long context
-        self.arange_np = np.arange(max(self.max_num_reqs + 1,
-                                       self.max_model_len,
-                                       self.max_num_tokens),
-                                   dtype=np.int64)
+        self.arange_np = np.arange(self.max_model_len * self.max_num_reqs, dtype=np.int64)
 
         # Layer pairings for cross-layer KV sharing.
         # If an Attention layer `layer_name` is in the keys of this dict, it
@@ -616,9 +615,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             num_computed_tokens = req_data.num_computed_tokens[i]
             new_block_ids = req_data.new_block_ids[i]
             resumed_from_preemption = req_data.resumed_from_preemption[i]
+            num_dropped_tokens = req_data.num_dropped_tokens_list[i]
 
             # Update the cached states.
             req_state.num_computed_tokens = num_computed_tokens
+            req_state.num_dropped_tokens = num_dropped_tokens
 
             if not is_last_rank:
                 # When using PP, the scheduler sends the sampled tokens back,
@@ -947,21 +948,36 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         num_scheduled_tokens = np.array(tokens, dtype=np.int32)
         max_num_scheduled_tokens = max(tokens)
 
+        num_kv_cache_tokens = (
+                self.input_batch.num_computed_tokens_cpu
+                - self.input_batch.num_dropped_tokens_list_cpu
+        )[:num_reqs]
+        total_num_kv_cache_tokens = num_kv_cache_tokens.sum()
+
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
         req_indices = np.repeat(self.arange_np[:num_reqs],
                                 num_scheduled_tokens)
+        occupied_indices = np.repeat(self.arange_np[:num_reqs],
+                                     num_kv_cache_tokens)
 
         # cu_num_tokens: [2, 5, 3] -> [2, 7, 10]
         # arange: [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
         cu_num_tokens, arange = self._get_cumsum_and_arange(
             num_scheduled_tokens)
+        _, occupied_positions_np = self._get_cumsum_and_arange(
+            num_kv_cache_tokens)
 
         # Get positions.
-        positions_np = self.positions.np[:total_num_scheduled_tokens]
+        positions_np = self.logical_positions.np[:total_num_scheduled_tokens]
         np.add(self.input_batch.num_computed_tokens_cpu[req_indices],
                arange,
                out=positions_np)
+
+        physical_positions_np = self.physical_positions.np[:total_num_scheduled_tokens]
+        np.add(num_kv_cache_tokens[req_indices],
+               arange,
+               out=physical_positions_np)
 
         # Calculate M-RoPE positions.
         # Only relevant for models using M-RoPE (e.g, Qwen2-VL)
@@ -1031,9 +1047,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 output_idx += num_sched
 
         self.input_batch.block_table.compute_slot_mapping(
-            req_indices, positions_np)
+            req_indices, positions_np, False)
+        self.input_batch.block_table.compute_slot_mapping(
+            occupied_indices, occupied_positions_np, True)
+
         self.input_batch.block_table.commit_slot_mapping(
-            total_num_scheduled_tokens)
+            total_num_scheduled_tokens, total_num_kv_cache_tokens)
 
         # Prepare the attention metadata.
         self.query_start_loc.np[0] = 0
@@ -1058,7 +1077,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                          vllm_config=self.vllm_config)
 
         self.seq_lens.np[:num_reqs] = (
-            self.input_batch.num_computed_tokens_cpu[:num_reqs] +
+            num_kv_cache_tokens +
             num_scheduled_tokens)
         # Fill unused with 0 for full cuda graph mode.
         self.seq_lens.np[num_reqs:].fill(0)
@@ -1091,7 +1110,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 non_blocking=True)
         else:
             # Common case (1D positions)
-            self.positions.copy_to_gpu(total_num_scheduled_tokens)
+            self.logical_positions.copy_to_gpu(total_num_scheduled_tokens)
 
         use_spec_decode = len(
             scheduler_output.scheduled_spec_decode_tokens) > 0
@@ -1171,17 +1190,23 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     dtype=torch.int64,
                     device=self.device,
                 )
+                occupied_slot_mapping = torch.zeros(
+                    (total_num_kv_cache_tokens, ),
+                    dtype=torch.int64,
+                    device=self.device,
+                )
                 num_common_prefix_blocks = 0
             else:
                 blk_table = self.input_batch.block_table[kv_cache_group_id]
                 blk_table_tensor = blk_table.get_device_tensor(num_reqs)
-                slot_mapping = blk_table.slot_mapping.gpu[:
-                                                          total_num_scheduled_tokens]
+                slot_mapping = blk_table.slot_mapping.gpu[:total_num_scheduled_tokens]
+                occupied_slot_mapping = blk_table.occupied_slot_mapping.gpu[:total_num_kv_cache_tokens]
 
                 # Fill unused with -1. Needed for reshape_and_cache in full cuda
                 # graph mode.
-                blk_table.slot_mapping.gpu[total_num_scheduled_tokens:].fill_(
-                    -1)
+                blk_table.slot_mapping.gpu[total_num_scheduled_tokens:].fill_(-1)
+                blk_table.occupied_slot_mapping[total_num_kv_cache_tokens:].fill_(-1)
+
                 num_common_prefix_blocks = (
                     scheduler_output.
                     num_common_prefix_blocks[kv_cache_group_id])
@@ -1198,6 +1223,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 max_seq_len=max_seq_len,
                 block_table_tensor=blk_table_tensor,
                 slot_mapping=slot_mapping,
+                occupied_slot_mapping=occupied_slot_mapping,
+                total_num_kv_cache_tokens=total_num_kv_cache_tokens,
                 logits_indices_padded=logits_indices_padded,
                 num_logits_indices=logits_indices.size(0),
                 causal=True,
@@ -2027,7 +2054,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         if self.uses_mrope:
             positions = self.mrope_positions.gpu[:, :num_input_tokens]
         else:
-            positions = self.positions.gpu[:num_input_tokens]
+            positions = self.logical_positions.gpu[:num_input_tokens]
 
         if get_pp_group().is_first_rank:
             intermediate_tensors = None
@@ -2432,6 +2459,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             pooler_output=[],
             kv_connector_output=kv_connector_output,
             num_nans_in_logits=num_nans_in_logits,
+            num_dropped_tokens_list=next(iter(attn_metadata.values())).num_dropped_tokens_list,
         )
 
         if not self.use_async_scheduling:
@@ -2534,7 +2562,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # input_ids can be None for multimodal models.
                 target_token_ids = self.input_ids.gpu[:num_scheduled_tokens]
                 # TODO(woosuk): Support M-RoPE.
-                target_positions = self.positions.gpu[:num_scheduled_tokens]
+                target_positions = self.logical_positions.gpu[:num_scheduled_tokens]
                 if self.use_aux_hidden_state_outputs:
                     assert aux_hidden_states is not None
                     target_hidden_states = torch.cat(
@@ -2560,7 +2588,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
                 target_token_ids = self.input_ids.gpu[token_indices]
                 # TODO(woosuk): Support M-RoPE.
-                target_positions = self.positions.gpu[token_indices]
+                target_positions = self.logical_positions.gpu[token_indices]
                 if self.use_aux_hidden_state_outputs:
                     assert aux_hidden_states is not None
                     target_hidden_states = torch.cat(
@@ -3059,6 +3087,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     block_table[kv_cache_group_id].get_device_tensor(num_reqs),
                     slot_mapping=self.input_batch.block_table[
                         kv_cache_group_id].slot_mapping.gpu[:num_tokens],
+                    occupied_slot_mapping=self.input_batch.block_table[
+                        kv_cache_group_id].slot_mapping.gpu[:num_tokens],
                     causal=True)
                 for attn_group in self.attn_groups[kv_cache_group_id]:
                     if ubatch_slices is not None:
@@ -3103,7 +3133,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             if self.uses_mrope:
                 positions = self.mrope_positions.gpu[:, :num_tokens]
             else:
-                positions = self.positions.gpu[:num_tokens]
+                positions = self.logical_positions.gpu[:num_tokens]
 
             if get_pp_group().is_first_rank:
                 intermediate_tensors = None

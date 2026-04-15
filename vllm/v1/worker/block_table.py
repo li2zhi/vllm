@@ -38,6 +38,11 @@ class BlockTable:
 
         self.slot_mapping = self._make_buffer(self.max_num_batched_tokens,
                                               dtype=torch.int64)
+
+        max_total_kv_tokens = self.max_num_reqs * self.max_num_blocks_per_req * self.block_size
+        self.occupied_slot_mapping = self._make_buffer(max_total_kv_tokens,
+                                              dtype=torch.int64)
+
         try:
             self.dcp_world_size = get_dcp_group().world_size
             self.dcp_rank = get_dcp_group().rank_in_group
@@ -74,7 +79,7 @@ class BlockTable:
         self.block_table.np[src_tgt] = self.block_table.np[tgt_src]
 
     def compute_slot_mapping(self, req_indices: np.ndarray,
-                             positions: np.ndarray) -> None:
+                             positions: np.ndarray, is_occupied: bool) -> None:
         # E.g., [0, 1, 0, 1, 2, 3, 4, 0, 1, 2]
         # -> [0, 0, K, K, K + 1, K + 1, K + 2, 2 * K, 2 * K, 2 * K + 1]
         # where K is the max_num_blocks_per_req and the block size is 2.
@@ -108,15 +113,18 @@ class BlockTable:
                                    positions // self.block_size)
             block_numbers = self.block_table.np.ravel()[block_table_indices]
             block_offsets = positions % self.block_size
+
+            out = self.occupied_slot_mapping.np if is_occupied else self.slot_mapping.np
             np.add(block_numbers * self.block_size,
                    block_offsets,
-                   out=self.slot_mapping.np[:req_indices.shape[0]])
+                   out=out[:req_indices.shape[0]])
 
     def commit_block_table(self, num_reqs: int) -> None:
         self.block_table.copy_to_gpu(num_reqs)
 
-    def commit_slot_mapping(self, num_tokens: int) -> None:
-        self.slot_mapping.copy_to_gpu(num_tokens)
+    def commit_slot_mapping(self, total_num_scheduled_tokens: int, total_num_kv_cache_tokens: int) -> None:
+        self.slot_mapping.copy_to_gpu(total_num_scheduled_tokens)
+        self.occupied_slot_mapping.copy_to_gpu(total_num_kv_cache_tokens)
 
     def clear(self) -> None:
         self.block_table.gpu.fill_(0)
@@ -189,17 +197,17 @@ class MultiGroupBlockTable:
             block_table.swap_row(src, tgt)
 
     def compute_slot_mapping(self, req_indices: np.ndarray,
-                             positions: np.ndarray) -> None:
+                             positions: np.ndarray, is_occupied: bool) -> None:
         for block_table in self.block_tables:
-            block_table.compute_slot_mapping(req_indices, positions)
+            block_table.compute_slot_mapping(req_indices, positions, is_occupied)
 
     def commit_block_table(self, num_reqs: int) -> None:
         for block_table in self.block_tables:
             block_table.commit_block_table(num_reqs)
 
-    def commit_slot_mapping(self, num_tokens: int) -> None:
+    def commit_slot_mapping(self, total_num_scheduled_tokens: int, total_num_kv_cache_tokens: int) -> None:
         for block_table in self.block_tables:
-            block_table.commit_slot_mapping(num_tokens)
+            block_table.commit_slot_mapping(total_num_scheduled_tokens, total_num_kv_cache_tokens)
 
     def clear(self) -> None:
         for block_table in self.block_tables:

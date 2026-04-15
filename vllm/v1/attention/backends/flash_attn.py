@@ -31,6 +31,10 @@ from vllm.v1.attention.backends.utils import (AttentionCGSupport,
                                               get_kv_cache_layout)
 from vllm.v1.kv_cache_interface import AttentionSpec
 
+# r1kv
+from vllm.plugins.rkv import R1KV
+from vllm.envs import VLLM_V1_R_KV_BUDGET, VLLM_V1_R_KV_BUFFER
+
 logger = init_logger(__name__)
 
 
@@ -124,6 +128,11 @@ class FlashAttentionMetadata:
     seq_lens: torch.Tensor
     block_table: torch.Tensor
     slot_mapping: torch.Tensor
+
+    # For R1KV
+    num_reqs: int
+    num_dropped_tokens_list: list[int]
+    occupied_slot_mapping: torch.Tensor
 
     # For cascade attention.
     use_cascade: bool
@@ -239,6 +248,10 @@ class FlashAttentionMetadataBuilder(
         slot_mapping = common_attn_metadata.slot_mapping
         causal = common_attn_metadata.causal
 
+        # R1KV
+        occupied_slot_mapping = common_attn_metadata.occupied_slot_mapping
+        num_dropped_tokens_list = [0] * num_reqs
+
         # the overhead of the aot schedule is not worth it for spec-decode
         aot_schedule = self.aot_schedule and not fast_build
 
@@ -349,6 +362,9 @@ class FlashAttentionMetadataBuilder(
             seq_lens=seq_lens,
             block_table=block_table_tensor,
             slot_mapping=slot_mapping,
+            num_reqs=num_reqs,
+            num_dropped_tokens_list=num_dropped_tokens_list,
+            occupied_slot_mapping=occupied_slot_mapping,
             use_cascade=use_cascade,
             common_prefix_len=common_prefix_len,
             scheduler_metadata=scheduler_metadata,
@@ -418,6 +434,8 @@ class FlashAttentionImpl(AttentionImpl):
             assert self.sinks.shape[0] == num_heads, (
                 "Sinks must have the same number of heads as the number of "
                 "heads in the layer")
+
+        self.kv_compressor = R1KV(budget=VLLM_V1_R_KV_BUDGET)
 
     def forward(
         self,
@@ -546,6 +564,69 @@ class FlashAttentionImpl(AttentionImpl):
                 num_splits=attn_metadata.max_num_splits,
                 s_aux=self.sinks,
             )
+
+            if VLLM_V1_R_KV_BUDGET <= 0 or VLLM_V1_R_KV_BUFFER <= 0:
+                return output
+
+            seq_starts_ends_indices = torch.concat(
+                (
+                    torch.tensor([0], dtype=torch.int32, device=attn_metadata.seq_lens.device),
+                    torch.cumsum(attn_metadata.seq_lens, dim=0) - 1,
+                ),
+                dim=0,
+            )
+
+            for i in range(attn_metadata.num_reqs):
+                if attn_metadata.seq_lens[i].cpu().item() < \
+                        VLLM_V1_R_KV_BUDGET + VLLM_V1_R_KV_BUFFER:
+                    continue
+
+                current_key_cache = key_cache.view(-1, key_cache.size(-2), key_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[
+                    seq_starts_ends_indices[i]:seq_starts_ends_indices[i + 1]
+                    ], ...
+                ]
+                current_value_cache = value_cache.view(-1, value_cache.size(-2), value_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[
+                    seq_starts_ends_indices[i]:seq_starts_ends_indices[i + 1]
+                    ], ...
+                ]
+
+                # [num_heads, num_tokens, head_dim]
+                current_query = query.transpose(0, 1)
+                current_key_cache = current_key_cache.transpose(0, 1)
+                current_value_cache = current_value_cache.transpose(0, 1)
+
+                # [batch_size, num_heads, num_tokens, head_dim]
+                current_query = current_query.unsqueeze(0)
+                current_key_cache = current_key_cache.unsqueeze(0)
+                current_value_cache = current_value_cache.unsqueeze(0)
+
+                current_kv_len = current_key_cache.size(2)
+                compressed_key_cache, compressed_value_cache = self.kv_compressor.update_kv(
+                    current_key_cache, current_query, current_value_cache
+                )
+                compressed_key_cache = compressed_key_cache.squeeze(0)
+                compressed_value_cache = compressed_value_cache.squeeze(0)
+
+                # 覆盖原 KV cache （只覆盖压缩后的前 compressed_kv_len 份）
+                compressed_kv_len = compressed_key_cache.size(1)
+                key_cache.view(-1, key_cache.size(-2), key_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[
+                    seq_starts_ends_indices[i]:seq_starts_ends_indices[i] + compressed_kv_len
+                    ], ...
+                ] = compressed_key_cache.transpose(0, 1)
+                value_cache.view(-1, value_cache.size(-2), value_cache.size(-1))[
+                    attn_metadata.occupied_slot_mapping[
+                    seq_starts_ends_indices[i]:seq_starts_ends_indices[i] + compressed_kv_len
+                    ], ...
+                ] = compressed_value_cache.transpose(0, 1)
+
+                num_dropped_tokens_i = current_kv_len - compressed_kv_len
+                if num_dropped_tokens_i != attn_metadata.num_dropped_tokens_list[i]:
+                    assert attn_metadata.num_dropped_tokens_list[i] == 0
+                    attn_metadata.num_dropped_tokens_list[i] = num_dropped_tokens_i
+
             return output
 
         # Cascade attention (rare case).

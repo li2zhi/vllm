@@ -38,6 +38,7 @@ class CachedRequestState:
     block_ids: tuple[list[int], ...]
     num_computed_tokens: int
     output_token_ids: list[int]
+    num_dropped_tokens: Optional[int] = 0
 
     mrope_positions: Optional[torch.Tensor] = None
     mrope_position_delta: Optional[int] = None
@@ -134,6 +135,15 @@ class InputBatch:
         )
         self.num_computed_tokens_cpu = \
             self.num_computed_tokens_cpu_tensor.numpy()
+
+        # R1KV
+        self.num_dropped_tokens_list_cpu_tensor = torch.zeros(
+            (max_num_reqs,),
+            device="cpu",
+            dtype=torch.int32,
+            pin_memory=pin_memory,
+        )
+        self.num_dropped_tokens_list_cpu = self.num_dropped_tokens_list_cpu_tensor.numpy()
 
         # Block table.
         self.block_table = MultiGroupBlockTable(
@@ -347,6 +357,7 @@ class InputBatch:
         self.num_tokens_no_spec[req_index] = request.num_tokens
 
         self.num_computed_tokens_cpu[req_index] = request.num_computed_tokens
+        self.num_dropped_tokens_list_cpu[req_index] = request.num_dropped_tokens
         self.block_table.add_row(request.block_ids, req_index)
 
         if sampling_params := request.sampling_params:
@@ -515,6 +526,8 @@ class InputBatch:
             self.num_prompt_tokens[i2], self.num_prompt_tokens[i1]
         self.num_computed_tokens_cpu[i1], self.num_computed_tokens_cpu[i2] =\
             self.num_computed_tokens_cpu[i2], self.num_computed_tokens_cpu[i1]
+        self.num_dropped_tokens_list_cpu[i1], self.num_dropped_tokens_list_cpu[i2] = \
+            self.num_dropped_tokens_list_cpu[i2], self.num_dropped_tokens_list_cpu[i1]
 
         # NOTE: the following is unsafe
         # self.token_ids_cpu[i1, ...], self.token_ids_cpu[i2, ...], =\
@@ -640,6 +653,8 @@ class InputBatch:
                 last_req_index]
             self.num_computed_tokens_cpu[
                 empty_index] = self.num_computed_tokens_cpu[last_req_index]
+            self.num_dropped_tokens_list_cpu[empty_index] = \
+                self.num_dropped_tokens_list_cpu[last_req_index]
             self.block_table.move_row(last_req_index, empty_index)
 
             self.request_lora_mapping[empty_index] = self.request_lora_mapping[

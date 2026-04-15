@@ -205,6 +205,8 @@ if TYPE_CHECKING:
     VLLM_USE_NCCL_SYMM_MEM: bool = False
     VLLM_NCCL_INCLUDE_PATH: Optional[str] = None
     VLLM_USE_FBGEMM: bool = False
+    VLLM_V1_R_KV_BUDGET: int = 512
+    VLLM_V1_R_KV_BUFFER: int = 128
 
 
 def get_default_cache_root():
@@ -1475,6 +1477,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     lambda: os.environ.get("VLLM_NCCL_INCLUDE_PATH", None),
     # Flag to enable FBGemm kernels on model execution
     "VLLM_USE_FBGEMM": lambda: bool(int(os.getenv("VLLM_USE_FBGEMM", "0"))),
+
+    # R1KV
+    "VLLM_V1_R_KV_BUDGET":
+        lambda: int(os.getenv("VLLM_V1_R_KV_BUDGET", "512")),
+
+    "VLLM_V1_R_KV_BUFFER":
+        lambda: int(os.getenv("VLLM_V1_R_KV_BUFFER", "0")),
 }
 
 # --8<-- [end:env-vars-definition]
