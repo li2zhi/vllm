@@ -102,6 +102,8 @@ class CachedRequestData:
     new_block_ids: list[Optional[tuple[list[int], ...]]]
     num_computed_tokens: list[int]
 
+    num_dropped_tokens_list: list[int]
+
     @property
     def num_reqs(self) -> int:
         return len(self.req_ids)
@@ -114,6 +116,7 @@ class CachedRequestData:
             new_token_ids=[],
             new_block_ids=[],
             num_computed_tokens=[],
+            num_dropped_tokens_list = []
         )
 
 

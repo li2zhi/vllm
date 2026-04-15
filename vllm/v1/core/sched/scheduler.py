@@ -669,6 +669,7 @@ class Scheduler(SchedulerInterface):
         new_token_ids: list[list[int]] = []
         new_block_ids: list[Optional[tuple[list[int], ...]]] = []
         num_computed_tokens: list[int] = []
+        num_dropped_tokens_list: list[int] = []
 
         use_connector = self.connector is not None
         for req in itertools.chain(running_reqs, resumed_reqs):
@@ -693,6 +694,7 @@ class Scheduler(SchedulerInterface):
             new_block_ids.append(
                 req_to_new_blocks[req_id].get_block_ids(allow_none=True))
             num_computed_tokens.append(req.num_computed_tokens)
+            num_dropped_tokens_list.append(req.num_dropped_tokens)
         # Because resumed_reqs is usually empty, it is more efficient to do
         # in-place appending so that we don't need to allocate a new list.
         resumed_from_preemption = [False] * len(running_reqs)
@@ -704,6 +706,7 @@ class Scheduler(SchedulerInterface):
             new_token_ids=new_token_ids,
             new_block_ids=new_block_ids,
             num_computed_tokens=num_computed_tokens,
+            num_dropped_tokens_list=num_dropped_tokens_list,
         )
 
     def _try_schedule_encoder_inputs(
@@ -894,6 +897,7 @@ class Scheduler(SchedulerInterface):
             req_index = model_runner_output.req_id_to_index[req_id]
             generated_token_ids = sampled_token_ids[
                 req_index] if sampled_token_ids else []
+            request.num_dropped_tokens += num_dropped_tokens_list[req_index]
 
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id))
@@ -954,8 +958,6 @@ class Scheduler(SchedulerInterface):
 
             if num_nans_in_logits is not None and req_id in num_nans_in_logits:
                 request.num_nans_in_logits = num_nans_in_logits[req_id]
-            if req_index < len(num_dropped_tokens_list):
-                request.num_dropped_tokens = num_dropped_tokens_list[req_index]
 
             # Get prompt logprobs for this request.
             prompt_logprobs_tensors = prompt_logprobs_dict.get(req_id)

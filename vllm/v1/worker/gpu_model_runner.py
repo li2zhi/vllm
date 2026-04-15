@@ -1205,7 +1205,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Fill unused with -1. Needed for reshape_and_cache in full cuda
                 # graph mode.
                 blk_table.slot_mapping.gpu[total_num_scheduled_tokens:].fill_(-1)
-                blk_table.occupied_slot_mapping[total_num_kv_cache_tokens:].fill_(-1)
+                blk_table.occupied_slot_mapping.gpu[total_num_kv_cache_tokens:].fill_(-1)
 
                 num_common_prefix_blocks = (
                     scheduler_output.
