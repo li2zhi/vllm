@@ -970,12 +970,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 - self.input_batch.num_dropped_tokens_list_cpu
         )[:num_reqs]
         total_num_kv_cache_tokens = num_kv_cache_tokens.sum()
-        print(f"======================DEBUG======================")
-        print(f"req_ids: {req_ids}")
-        print(f"num_computed_tokens: {self.input_batch.num_computed_tokens_cpu[:num_reqs]}")
-        print(f"num_dropped_tokens: {self.input_batch.num_dropped_tokens_list_cpu[:num_reqs]}")
-        print(f"num_kv_cache_tokens: {num_kv_cache_tokens}")
-        print(f"======================DEBUG======================")
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
         req_indices = np.repeat(self.arange_np[:num_reqs],
@@ -1114,7 +1108,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
 
         # Record the index of requests that should not be sampled,
         # so that we could clear the sampled tokens before returning
-        discard_requests_mask = self.seq_lens.np[:num_reqs] < num_tokens_np
+        partial_mask = self.seq_lens.np[:num_reqs] < num_tokens_np
+        has_kv_compression = np.array([self.requests[r].num_dropped_tokens > 0 for r in self.input_batch.req_ids])
+        discard_requests_mask = partial_mask & (~has_kv_compression)
+
         discard_request_indices = np.nonzero(discard_requests_mask)[0]
         self.num_discarded_requests = len(discard_request_indices)
         self.discard_request_indices.np[:self.num_discarded_requests] = (
@@ -2286,8 +2283,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             with self.synchronize_input_prep():
                 # Update persistent batch states.
                 self._update_states(scheduler_output)
-                print(f"after update_states")
-                print(f"{scheduler_output.num_scheduled_tokens}")
 
                 if not scheduler_output.total_num_scheduled_tokens:
                     if not has_kv_transfer_group():
