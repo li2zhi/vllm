@@ -526,8 +526,6 @@ class InputBatch:
             self.num_prompt_tokens[i2], self.num_prompt_tokens[i1]
         self.num_computed_tokens_cpu[i1], self.num_computed_tokens_cpu[i2] =\
             self.num_computed_tokens_cpu[i2], self.num_computed_tokens_cpu[i1]
-        self.num_dropped_tokens_list_cpu[i1], self.num_dropped_tokens_list_cpu[i2] = \
-            self.num_dropped_tokens_list_cpu[i2], self.num_dropped_tokens_list_cpu[i1]
 
         # NOTE: the following is unsafe
         # self.token_ids_cpu[i1, ...], self.token_ids_cpu[i2, ...], =\
@@ -653,8 +651,8 @@ class InputBatch:
                 last_req_index]
             self.num_computed_tokens_cpu[
                 empty_index] = self.num_computed_tokens_cpu[last_req_index]
-            self.num_dropped_tokens_list_cpu[empty_index] = \
-                self.num_dropped_tokens_list_cpu[last_req_index]
+            self.num_dropped_tokens_list_cpu[
+                empty_index] = self.num_dropped_tokens_list_cpu[last_req_index]
             self.block_table.move_row(last_req_index, empty_index)
 
             self.request_lora_mapping[empty_index] = self.request_lora_mapping[

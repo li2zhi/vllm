@@ -440,6 +440,10 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             device="cpu",
             pin_memory=self.pin_memory)
 
+        self.total_compress_reqs = 0
+        self.total_computed_tokens = 0
+        self.total_dropped_tokens = 0
+
     def _make_buffer(self,
                      *size: Union[int, torch.SymInt],
                      dtype: torch.dtype,
@@ -534,7 +538,18 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         """
         # Remove finished requests from the cached states.
         for req_id in scheduler_output.finished_req_ids:
-            self.requests.pop(req_id, None)
+            finished_req = self.requests.pop(req_id, None)
+            self.total_computed_tokens += finished_req.num_computed_tokens
+            if finished_req.num_dropped_tokens > 0:
+                self.total_compress_reqs += 1
+                self.total_dropped_tokens += finished_req.num_dropped_tokens
+
+            print(f"\n======================DEBUG======================")
+            print(f"total_computed_tokens: {self.total_computed_tokens}")
+            print(f"total_compress_reqs: {self.total_compress_reqs}, total_dropped_tokens: {self.total_dropped_tokens}")
+            print(f"kv save ratio: {self.total_dropped_tokens / self.total_computed_tokens * 100:.2f}")
+            print(f"======================DEBUG======================")
+
         # Remove the finished requests from the persistent batch.
         # NOTE(woosuk): There could be an edge case where finished_req_ids and
         # scheduled_req_ids overlap. This happens when a request is aborted and
@@ -661,6 +676,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             # Update the persistent batch.
             self.input_batch.num_computed_tokens_cpu[req_index] = (
                 num_computed_tokens)
+            self.input_batch.num_dropped_tokens_list_cpu[req_index] = (
+                num_dropped_tokens)
             if new_block_ids is not None:
                 self.input_batch.block_table.append_row(
                     new_block_ids, req_index)
@@ -953,7 +970,12 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 - self.input_batch.num_dropped_tokens_list_cpu
         )[:num_reqs]
         total_num_kv_cache_tokens = num_kv_cache_tokens.sum()
-
+        print(f"======================DEBUG======================")
+        print(f"req_ids: {req_ids}")
+        print(f"num_computed_tokens: {self.input_batch.num_computed_tokens_cpu[:num_reqs]}")
+        print(f"num_dropped_tokens: {self.input_batch.num_dropped_tokens_list_cpu[:num_reqs]}")
+        print(f"num_kv_cache_tokens: {num_kv_cache_tokens}")
+        print(f"======================DEBUG======================")
         # Get request indices.
         # E.g., [2, 5, 3] -> [0, 0, 1, 1, 1, 1, 1, 2, 2, 2]
         req_indices = np.repeat(self.arange_np[:num_reqs],
@@ -1047,7 +1069,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 output_idx += num_sched
 
         self.input_batch.block_table.compute_slot_mapping(
-            req_indices, positions_np, False)
+            req_indices, physical_positions_np, False)
         self.input_batch.block_table.compute_slot_mapping(
             occupied_indices, occupied_positions_np, True)
 
@@ -2264,6 +2286,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             with self.synchronize_input_prep():
                 # Update persistent batch states.
                 self._update_states(scheduler_output)
+                print(f"after update_states")
+                print(f"{scheduler_output.num_scheduled_tokens}")
 
                 if not scheduler_output.total_num_scheduled_tokens:
                     if not has_kv_transfer_group():
@@ -2303,7 +2327,6 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                uniform_decode=uniform_decode)
             cudagraph_runtime_mode, batch_descriptor = \
                 self.cudagraph_dispatcher.dispatch(batch_descriptor)
-
         # This is currently to get around the assert in the DPMetadata
         # where it wants `num_tokens_across_dp` to align with `num_tokens`
         if ubatch_slices is not None:

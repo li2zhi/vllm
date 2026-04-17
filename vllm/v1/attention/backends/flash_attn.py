@@ -577,8 +577,7 @@ class FlashAttentionImpl(AttentionImpl):
             )
 
             for i in range(attn_metadata.num_reqs):
-                if attn_metadata.seq_lens[i].cpu().item() < \
-                        VLLM_V1_R_KV_BUDGET + VLLM_V1_R_KV_BUFFER:
+                if attn_metadata.seq_lens[i].cpu().item() < VLLM_V1_R_KV_BUDGET + VLLM_V1_R_KV_BUFFER:
                     continue
 
                 current_key_cache = key_cache.view(-1, key_cache.size(-2), key_cache.size(-1))[
