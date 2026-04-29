@@ -544,11 +544,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 self.total_compress_reqs += 1
                 self.total_dropped_tokens += finished_req.num_dropped_tokens
 
-            print(f"\n======================DEBUG======================")
-            print(f"total_computed_tokens: {self.total_computed_tokens}")
-            print(f"total_compress_reqs: {self.total_compress_reqs}, total_dropped_tokens: {self.total_dropped_tokens}")
-            print(f"kv save ratio: {self.total_dropped_tokens / self.total_computed_tokens * 100:.2f}")
-            print(f"======================DEBUG======================")
+            logger.info("\n======================DEBUG======================")
+            logger.info("total_computed_tokens: %d", self.total_computed_tokens)
+            logger.info("total_compress_reqs: %d, total_dropped_tokens: %d", self.total_compress_reqs, self.total_dropped_tokens)
+            logger.info("kv save ratio: %.2f", self.total_dropped_tokens / self.total_computed_tokens * 100)
+            logger.info("======================DEBUG======================")
 
         # Remove the finished requests from the persistent batch.
         # NOTE(woosuk): There could be an edge case where finished_req_ids and
